@@ -58,7 +58,7 @@ def normalize_list(raw):
 def slugify(value):
     value = value.lower().strip()
     if not value or len(value) > 40 or not re.fullmatch(r"[a-z0-9_-]+", value):
-        raise ValueError("РРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ 1вЂ“40 СЃРёРјРІРѕР»РѕРІ: a-z, 0-9, _ РёР»Рё -")
+        raise ValueError("Идентификатор должен содержать 1–40 символов: a-z, 0-9, _ или -")
     return value
 
 
@@ -96,12 +96,12 @@ def init():
             now = int(time.time())
             c.execute("""INSERT INTO managed_lists(title,slug,description,export_token,content,created,updated)
                          VALUES(?,?,?,?,?,?,?)""",
-                      ("РњР°СЂС€СЂСѓС‚С‹ С‡РµСЂРµР· Amnezia", "routes", "РЎРµС‚Рё РґР»СЏ ROUTE_VIA_AMNEZIA", token, content, now, now))
+                      ("Маршруты через Amnezia", "routes", "Сети для ROUTE_VIA_AMNEZIA", token, content, now, now))
         if not c.execute("SELECT 1 FROM managed_lists WHERE slug='bypass'").fetchone():
             now = int(time.time())
             c.execute("""INSERT INTO managed_lists(title,slug,description,export_token,content,created,updated)
                          VALUES(?,?,?,?,?,?,?)""",
-                      ("РСЃРєР»СЋС‡РµРЅРёСЏ", "bypass", "РљР»РёРµРЅС‚С‹, РєРѕС‚РѕСЂС‹Рµ РѕР±С…РѕРґСЏС‚ РјР°СЂС€СЂСѓС‚С‹ Amnezia", secrets.token_urlsafe(32), "", now, now))
+                      ("Исключения", "bypass", "Клиенты, которые обходят маршруты Amnezia", secrets.token_urlsafe(32), "", now, now))
         for item in c.execute("SELECT slug,content FROM managed_lists"):
             export_path(item["slug"]).write_text(item["content"], encoding="ascii")
 
@@ -169,37 +169,37 @@ class Handler(BaseHTTPRequestHandler):
             if not item or not hmac.compare_digest(supplied, item["export_token"]): return self.respond(404, b"not found\n", "text/plain")
             return self.respond(200, item["content"].encode("ascii"), "text/plain; charset=ascii", [("Cache-Control","no-store")])
         if parsed.path == "/login":
-            return self.respond(200, page("Р’С…РѕРґ", """<div class="card"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>Route Portal</h1></div><form method="post" action="/login">
-            <p><label>Р›РѕРіРёРЅ<input name="username" required></label></p><p><label>РџР°СЂРѕР»СЊ<input type="password" name="password" required></label></p><button>Р’РѕР№С‚Рё</button></form></div>"""))
+            return self.respond(200, page("Вход", """<div class="card"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>Route Portal</h1></div><form method="post" action="/login">
+            <p><label>Логин<input name="username" required></label></p><p><label>Пароль<input type="password" name="password" required></label></p><button>Войти</button></form></div>"""))
         session = self.require_session()
         if not session: return
         if parsed.path == "/":
             with db() as c: items = c.execute("""SELECT m.*,COUNT(v.id) version_count FROM managed_lists m
                                                 LEFT JOIN list_versions v ON v.list_id=m.id GROUP BY m.id ORDER BY m.title""").fetchall()
             cards = "".join(f"""<div class="card"><h2>{html.escape(x['title'])}</h2><p>{html.escape(x['description'])}</p>
-            <p class="muted">{len(x['content'].splitlines())} СЃРµС‚РµР№ В· РІРµСЂСЃРёР№: {x['version_count']}</p>
-            <a class="button" href="/edit/{x['id']}">РћС‚РєСЂС‹С‚СЊ</a></div>""" for x in items)
-            body = f"""<div class="row"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>РЎРїРёСЃРєРё pfSense</h1></div><div class="actions"><a class="button" href="/new">РќРѕРІС‹Р№ СЃРїРёСЃРѕРє</a>
-            <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{session['csrf']}"><button class="secondary">Р’С‹Р№С‚Рё</button></form></div></div><div class="grid">{cards}</div>"""
-            return self.respond(200, page("РЎРїРёСЃРєРё pfSense", body))
+            <p class="muted">{len(x['content'].splitlines())} сетей · версий: {x['version_count']}</p>
+            <a class="button" href="/edit/{x['id']}">Открыть</a></div>""" for x in items)
+            body = f"""<div class="row"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>Списки pfSense</h1></div><div class="actions"><a class="button" href="/new">Новый список</a>
+            <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{session['csrf']}"><button class="secondary">Выйти</button></form></div></div><div class="grid">{cards}</div>"""
+            return self.respond(200, page("Списки pfSense", body))
         if parsed.path == "/new":
-            body = f"""<div class="card"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>РќРѕРІС‹Р№ СЃРїРёСЃРѕРє</h1></div><form method="post" action="/new"><input type="hidden" name="csrf" value="{session['csrf']}">
-            <p><label>РќР°Р·РІР°РЅРёРµ<input name="title" required></label></p><p><label>РРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ РґР»СЏ URL<input name="slug" placeholder="example-list" required></label></p>
-            <p><label>РћРїРёСЃР°РЅРёРµ<input name="description"></label></p><button>РЎРѕР·РґР°С‚СЊ</button> <a class="button secondary" href="/">РћС‚РјРµРЅР°</a></form></div>"""
-            return self.respond(200, page("РќРѕРІС‹Р№ СЃРїРёСЃРѕРє", body))
+            body = f"""<div class="card"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>Новый список</h1></div><form method="post" action="/new"><input type="hidden" name="csrf" value="{session['csrf']}">
+            <p><label>Название<input name="title" required></label></p><p><label>Идентификатор для URL<input name="slug" placeholder="example-list" required></label></p>
+            <p><label>Описание<input name="description"></label></p><button>Создать</button> <a class="button secondary" href="/">Отмена</a></form></div>"""
+            return self.respond(200, page("Новый список", body))
         match = re.fullmatch(r"/edit/(\d+)", parsed.path)
         if match:
             item = self.list_by_id(int(match.group(1)))
             if not item: return self.respond(404, b"not found\n", "text/plain")
             url = f"http://{self.headers.get('Host','SERVER')}/lists/{item['slug']}.txt?token={item['export_token']}"
-            body = f"""<div class="row"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>{html.escape(item['title'])}</h1></div><a class="button secondary" href="/">Рљ СЃРїРёСЃРєР°Рј</a></div>
+            body = f"""<div class="row"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>{html.escape(item['title'])}</h1></div><a class="button secondary" href="/">К спискам</a></div>
             <div class="card"><form method="post" action="/save/{item['id']}"><input type="hidden" name="csrf" value="{session['csrf']}">
-            <p><label>РќР°Р·РІР°РЅРёРµ<input name="title" value="{html.escape(item['title'])}" required></label></p>
-            <p><label>РћРїРёСЃР°РЅРёРµ<input name="description" value="{html.escape(item['description'])}"></label></p>
-            <textarea name="networks" spellcheck="false">{html.escape(item['content'])}</textarea><p><button>РџСЂРѕРІРµСЂРёС‚СЊ Рё РѕРїСѓР±Р»РёРєРѕРІР°С‚СЊ</button></p></form>
-            <p class="muted">URL РґР»СЏ pfSense URL Table Alias:</p><code>{html.escape(url)}</code><hr>
-            <form method="post" action="/delete/{item['id']}" onsubmit="return confirm('РЈРґР°Р»РёС‚СЊ СЃРїРёСЃРѕРє?')"><input type="hidden" name="csrf" value="{session['csrf']}">
-            <button class="danger">РЈРґР°Р»РёС‚СЊ СЃРїРёСЃРѕРє</button></form></div>"""
+            <p><label>Название<input name="title" value="{html.escape(item['title'])}" required></label></p>
+            <p><label>Описание<input name="description" value="{html.escape(item['description'])}"></label></p>
+            <textarea name="networks" spellcheck="false">{html.escape(item['content'])}</textarea><p><button>Проверить и опубликовать</button></p></form>
+            <p class="muted">URL для pfSense URL Table Alias:</p><code>{html.escape(url)}</code><hr>
+            <form method="post" action="/delete/{item['id']}" onsubmit="return confirm('Удалить список?')"><input type="hidden" name="csrf" value="{session['csrf']}">
+            <button class="danger">Удалить список</button></form></div>"""
             return self.respond(200, page(item["title"], body))
         return self.respond(404, b"not found\n", "text/plain")
 
@@ -209,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 user = c.execute("SELECT * FROM users WHERE username=?", (data.get("username",""),)).fetchone()
                 if not user or not password_ok(data.get("password",""), user["password_hash"]):
-                    time.sleep(1); return self.respond(401, page("РћС€РёР±РєР°", '<div class="card"><div class="notice error">РќРµРІРµСЂРЅС‹Р№ Р»РѕРіРёРЅ РёР»Рё РїР°СЂРѕР»СЊ.</div><a class="button" href="/login">РќР°Р·Р°Рґ</a></div>'))
+                    time.sleep(1); return self.respond(401, page("Ошибка", '<div class="card"><div class="notice error">Неверный логин или пароль.</div><a class="button" href="/login">Назад</a></div>'))
                 token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
                 c.execute("INSERT INTO sessions VALUES(?,?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), user["username"], csrf, int(time.time())+SESSION_TTL))
             return self.redirect("/", f"rp_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_TTL}")
@@ -224,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.redirect("/login", "rp_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
         if self.path == "/new":
             try: slug = slugify(data.get("slug",""))
-            except ValueError as exc: return self.respond(400, page("РћС€РёР±РєР°", f'<div class="card"><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/new">РќР°Р·Р°Рґ</a></div>'))
+            except ValueError as exc: return self.respond(400, page("Ошибка", f'<div class="card"><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/new">Назад</a></div>'))
             now = int(time.time())
             try:
                 with db() as c:
@@ -232,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
                                       VALUES(?,?,?,?,?,?,?)""", (data.get("title","").strip(), slug, data.get("description","").strip(), secrets.token_urlsafe(32), "", now, now))
                     list_id = cur.lastrowid
             except sqlite3.IntegrityError:
-                return self.respond(409, page("РћС€РёР±РєР°", '<div class="card"><div class="notice error">РўР°РєРѕР№ РёРґРµРЅС‚РёС„РёРєР°С‚РѕСЂ СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚.</div><a class="button" href="/new">РќР°Р·Р°Рґ</a></div>'))
+                return self.respond(409, page("Ошибка", '<div class="card"><div class="notice error">Такой идентификатор уже существует.</div><a class="button" href="/new">Назад</a></div>'))
             export_path(slug).write_text("", encoding="ascii")
             return self.redirect(f"/edit/{list_id}")
         match = re.fullmatch(r"/save/(\d+)", self.path)
@@ -240,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
             item = self.list_by_id(int(match.group(1)))
             if not item: return self.respond(404, b"not found\n", "text/plain")
             try: normalized, source_count, output_count = normalize_list(data.get("networks",""))
-            except ValueError as exc: return self.respond(400, page("РћС€РёР±РєР° СЃРїРёСЃРєР°", f'<div class="card"><h1>РћС€РёР±РєР°</h1><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/edit/{item["id"]}">РќР°Р·Р°Рґ</a></div>'))
+            except ValueError as exc: return self.respond(400, page("Ошибка списка", f'<div class="card"><h1>Ошибка</h1><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/edit/{item["id"]}">Назад</a></div>'))
             temp = export_path(item["slug"]).with_suffix(".tmp"); temp.write_text(normalized, encoding="ascii"); os.replace(temp, export_path(item["slug"]))
             with db() as c:
                 c.execute("UPDATE managed_lists SET title=?,description=?,content=?,updated=? WHERE id=?",
