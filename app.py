@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import hashlib, hmac, html, ipaddress, os, re, secrets, sqlite3, time
+import hashlib, hmac, html, ipaddress, os, re, secrets, sqlite3, subprocess, time
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -11,6 +11,10 @@ PUBLIC_DIR = DATA_DIR / "public"
 LISTEN = os.environ.get("ROUTE_PORTAL_LISTEN", "127.0.0.1")
 PORT = int(os.environ.get("ROUTE_PORTAL_PORT", "8080"))
 LOGO_PATH = Path(os.environ.get("ROUTE_PORTAL_LOGO", "/opt/route-portal/logo.svg"))
+PFSENSE_HOST = os.environ.get("PFSENSE_REFRESH_HOST", "")
+PFSENSE_USER = os.environ.get("PFSENSE_REFRESH_USER", "admin")
+PFSENSE_KEY = os.environ.get("PFSENSE_REFRESH_KEY", "")
+PFSENSE_KNOWN_HOSTS = os.environ.get("PFSENSE_REFRESH_KNOWN_HOSTS", "")
 SESSION_TTL, MAX_BODY = 12 * 3600, 2 * 1024 * 1024
 
 
@@ -66,6 +70,32 @@ def export_path(slug):
     return PUBLIC_DIR / f"{slug}.txt"
 
 
+def validate_alias(value):
+    value = value.strip()
+    if value and not re.fullmatch(r"[A-Za-z0-9_]{1,64}", value):
+        raise ValueError("Имя алиаса pfSense может содержать только A-Z, a-z, 0-9 и _")
+    return value
+
+
+def refresh_pfsense(alias):
+    alias = validate_alias(alias)
+    if not alias:
+        raise RuntimeError("Для списка не указан алиас pfSense")
+    if not PFSENSE_HOST or not PFSENSE_KEY or not PFSENSE_KNOWN_HOSTS:
+        raise RuntimeError("Обновление pfSense ещё не настроено на сервере портала")
+    command = [
+        "/usr/bin/ssh", "-i", PFSENSE_KEY, "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={PFSENSE_KNOWN_HOSTS}",
+        f"{PFSENSE_USER}@{PFSENSE_HOST}", "refresh", alias,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=90, check=False)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"pfSense не обновил алиас: {detail[:500] or 'ошибка SSH'}")
+    return (result.stdout or "").strip()
+
+
 def init():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -78,11 +108,17 @@ def init():
         CREATE TABLE IF NOT EXISTS managed_lists(
           id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,slug TEXT NOT NULL UNIQUE,
           description TEXT NOT NULL DEFAULT '',export_token TEXT NOT NULL UNIQUE,
-          content TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL,updated INTEGER NOT NULL);
+          content TEXT NOT NULL DEFAULT '',pfsense_alias TEXT NOT NULL DEFAULT '',
+          created INTEGER NOT NULL,updated INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS list_versions(
           id INTEGER PRIMARY KEY AUTOINCREMENT,list_id INTEGER NOT NULL REFERENCES managed_lists(id) ON DELETE CASCADE,
           created INTEGER NOT NULL,username TEXT NOT NULL,source_count INTEGER NOT NULL,output_count INTEGER NOT NULL,content TEXT NOT NULL);
         """)
+        columns = {row["name"] for row in c.execute("PRAGMA table_info(managed_lists)")}
+        if "pfsense_alias" not in columns:
+            c.execute("ALTER TABLE managed_lists ADD COLUMN pfsense_alias TEXT NOT NULL DEFAULT ''")
+        c.execute("UPDATE managed_lists SET pfsense_alias='ROUTE_VIA_AMNEZIA' WHERE slug='routes' AND pfsense_alias=''")
+        c.execute("UPDATE managed_lists SET pfsense_alias='AMNEZIA_BYPASS' WHERE slug='bypass' AND pfsense_alias=''")
         if not c.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             user, password = os.environ.get("ROUTE_PORTAL_ADMIN_USER", "admin"), os.environ.get("ROUTE_PORTAL_ADMIN_PASSWORD")
             if not password or len(password) < 12:
@@ -185,18 +221,26 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/new":
             body = f"""<div class="card"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>Новый список</h1></div><form method="post" action="/new"><input type="hidden" name="csrf" value="{session['csrf']}">
             <p><label>Название<input name="title" required></label></p><p><label>Идентификатор для URL<input name="slug" placeholder="example-list" required></label></p>
-            <p><label>Описание<input name="description"></label></p><button>Создать</button> <a class="button secondary" href="/">Отмена</a></form></div>"""
+            <p><label>Описание<input name="description"></label></p><p><label>Алиас pfSense (необязательно)<input name="pfsense_alias" placeholder="MY_URL_TABLE"></label></p>
+            <button>Создать</button> <a class="button secondary" href="/">Отмена</a></form></div>"""
             return self.respond(200, page("Новый список", body))
         match = re.fullmatch(r"/edit/(\d+)", parsed.path)
         if match:
             item = self.list_by_id(int(match.group(1)))
             if not item: return self.respond(404, b"not found\n", "text/plain")
             url = f"http://{self.headers.get('Host','SERVER')}/lists/{item['slug']}.txt?token={item['export_token']}"
+            notice = ""
+            status = parse_qs(parsed.query).get("status", [""])[0]
+            if status == "published": notice = '<div class="notice">Список опубликован.</div>'
+            if status == "refreshed": notice = '<div class="notice">Список опубликован, алиас pfSense обновлён.</div>'
             body = f"""<div class="row"><div class="brand"><img class="logo" src="/logo.svg" alt=""><h1>{html.escape(item['title'])}</h1></div><a class="button secondary" href="/">К спискам</a></div>
-            <div class="card"><form method="post" action="/save/{item['id']}"><input type="hidden" name="csrf" value="{session['csrf']}">
+            <div class="card">{notice}<form method="post" action="/save/{item['id']}"><input type="hidden" name="csrf" value="{session['csrf']}">
             <p><label>Название<input name="title" value="{html.escape(item['title'])}" required></label></p>
             <p><label>Описание<input name="description" value="{html.escape(item['description'])}"></label></p>
-            <textarea name="networks" spellcheck="false">{html.escape(item['content'])}</textarea><p><button>Проверить и опубликовать</button></p></form>
+            <p><label>Алиас pfSense<input name="pfsense_alias" value="{html.escape(item['pfsense_alias'])}" placeholder="MY_URL_TABLE"></label></p>
+            <textarea name="networks" spellcheck="false">{html.escape(item['content'])}</textarea>
+            <p class="actions"><button name="action" value="publish">Опубликовать</button>
+            <button name="action" value="refresh">Опубликовать и обновить pfSense</button></p></form>
             <p class="muted">URL для pfSense URL Table Alias:</p><code>{html.escape(url)}</code><hr>
             <form method="post" action="/delete/{item['id']}" onsubmit="return confirm('Удалить список?')"><input type="hidden" name="csrf" value="{session['csrf']}">
             <button class="danger">Удалить список</button></form></div>"""
@@ -225,11 +269,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/new":
             try: slug = slugify(data.get("slug",""))
             except ValueError as exc: return self.respond(400, page("Ошибка", f'<div class="card"><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/new">Назад</a></div>'))
+            try: pfsense_alias = validate_alias(data.get("pfsense_alias", ""))
+            except ValueError as exc: return self.respond(400, page("Ошибка", f'<div class="card"><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/new">Назад</a></div>'))
             now = int(time.time())
             try:
                 with db() as c:
-                    cur = c.execute("""INSERT INTO managed_lists(title,slug,description,export_token,content,created,updated)
-                                      VALUES(?,?,?,?,?,?,?)""", (data.get("title","").strip(), slug, data.get("description","").strip(), secrets.token_urlsafe(32), "", now, now))
+                    cur = c.execute("""INSERT INTO managed_lists(title,slug,description,export_token,content,pfsense_alias,created,updated)
+                                      VALUES(?,?,?,?,?,?,?,?)""", (data.get("title","").strip(), slug, data.get("description","").strip(), secrets.token_urlsafe(32), "", pfsense_alias, now, now))
                     list_id = cur.lastrowid
             except sqlite3.IntegrityError:
                 return self.respond(409, page("Ошибка", '<div class="card"><div class="notice error">Такой идентификатор уже существует.</div><a class="button" href="/new">Назад</a></div>'))
@@ -241,13 +287,20 @@ class Handler(BaseHTTPRequestHandler):
             if not item: return self.respond(404, b"not found\n", "text/plain")
             try: normalized, source_count, output_count = normalize_list(data.get("networks",""))
             except ValueError as exc: return self.respond(400, page("Ошибка списка", f'<div class="card"><h1>Ошибка</h1><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/edit/{item["id"]}">Назад</a></div>'))
+            try: pfsense_alias = validate_alias(data.get("pfsense_alias", ""))
+            except ValueError as exc: return self.respond(400, page("Ошибка", f'<div class="card"><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/edit/{item["id"]}">Назад</a></div>'))
             temp = export_path(item["slug"]).with_suffix(".tmp"); temp.write_text(normalized, encoding="ascii"); os.replace(temp, export_path(item["slug"]))
             with db() as c:
-                c.execute("UPDATE managed_lists SET title=?,description=?,content=?,updated=? WHERE id=?",
-                          (data.get("title","").strip(), data.get("description","").strip(), normalized, int(time.time()), item["id"]))
+                c.execute("UPDATE managed_lists SET title=?,description=?,content=?,pfsense_alias=?,updated=? WHERE id=?",
+                          (data.get("title","").strip(), data.get("description","").strip(), normalized, pfsense_alias, int(time.time()), item["id"]))
                 c.execute("INSERT INTO list_versions(list_id,created,username,source_count,output_count,content) VALUES(?,?,?,?,?,?)",
                           (item["id"], int(time.time()), session["username"], source_count, output_count, normalized))
-            return self.redirect(f"/edit/{item['id']}")
+            if data.get("action") == "refresh":
+                try: refresh_pfsense(pfsense_alias)
+                except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                    return self.respond(502, page("Ошибка обновления pfSense", f'<div class="card"><h1>Список опубликован</h1><div class="notice error">{html.escape(str(exc))}</div><a class="button" href="/edit/{item["id"]}">Назад</a></div>'))
+                return self.redirect(f"/edit/{item['id']}?status=refreshed")
+            return self.redirect(f"/edit/{item['id']}?status=published")
         match = re.fullmatch(r"/delete/(\d+)", self.path)
         if match:
             item = self.list_by_id(int(match.group(1)))

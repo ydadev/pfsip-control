@@ -27,5 +27,11 @@ class PortalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.slugify("../../bad")
 
+    def test_alias_validation(self):
+        self.assertEqual(app.validate_alias("ROUTE_VIA_AMNEZIA"), "ROUTE_VIA_AMNEZIA")
+        self.assertEqual(app.validate_alias(""), "")
+        with self.assertRaises(ValueError):
+            app.validate_alias("bad; command")
+
 if __name__ == "__main__":
     unittest.main()
