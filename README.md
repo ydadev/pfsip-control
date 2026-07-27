@@ -254,6 +254,39 @@ ping -f -l 1393 8.8.8.8
 
 ## Обновление и резервное копирование
 
+## Кнопка «Опубликовать и обновить pfSense»
+
+Портал умеет после сохранения списка немедленно обновить соответствующий
+`URL Table`-алиас. Для списка укажите имя алиаса, например
+`ROUTE_VIA_AMNEZIA` или `AMNEZIA_BYPASS`.
+
+Соединение выполняется отдельным SSH-ключом. Ключ на pfSense запускает только
+ограниченную команду обновления URL Table и не даёт порталу произвольный shell.
+
+На pfSense установите `pfsense-refresh-command.sh` с владельцем `root` и правами
+`0755`, затем добавьте публичный ключ портала в `authorized_keys`:
+
+```text
+restrict,command="/usr/local/sbin/pfsense-refresh-command" ssh-ed25519 AAAA...
+```
+
+На сервере портала храните закрытый ключ и `known_hosts` в каталоге
+`/etc/route-portal-ssh`, доступном только `root:routeportal`, и добавьте в
+`/etc/route-portal.env`:
+
+```text
+PFSENSE_REFRESH_HOST=10.10.10.254
+PFSENSE_REFRESH_USER=admin
+PFSENSE_REFRESH_KEY=/etc/route-portal-ssh/id_ed25519
+PFSENSE_REFRESH_KNOWN_HOSTS=/etc/route-portal-ssh/known_hosts
+```
+
+После изменения переменных перезапустите службу:
+
+```bash
+sudo systemctl restart route-portal
+```
+
 Перед обновлением:
 
 ```bash

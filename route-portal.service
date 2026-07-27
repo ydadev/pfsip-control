@@ -17,6 +17,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/route-portal
+ReadOnlyPaths=/etc/route-portal-ssh
 
 [Install]
 WantedBy=multi-user.target
